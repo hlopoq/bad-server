@@ -1,3 +1,5 @@
+import rateLimit from 'express-rate-limit'
+import csurf from 'csurf'
 import { Router } from 'express'
 import {
     getCurrentUser,
@@ -10,21 +12,28 @@ import {
 } from '../controllers/auth'
 import auth from '../middlewares/auth'
 
-const router = Router()
+const authRouter = Router()
 
-// Получение информации о текущем пользователе
-router.get('/user', auth, getCurrentUser)
-// Обновление данных текущего пользователя
-router.patch('/me', auth, updateCurrentUser)
-// Получение ролей текущего пользователя
-router.get('/user/roles', auth, getCurrentUserRoles)
-// Авторизация (логин)
-router.post('/login', login)
-// Обновление токенов
-router.get('/token', refreshAccessToken)
-// Выход из системы
-router.get('/logout', logout)
-// Регистрация нового пользователя
-router.post('/register', register)
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 минут
+    max: 100, // максимум 100 запросов с IP
+    message: 'Too many requests, try again later',
+    standardHeaders: true,
+    legacyHeaders: false,
+})
 
-export default router
+const csrfProtection = csurf({ cookie: true });
+
+authRouter.get('/csrf-token', csrfProtection, (req, res) => {
+    res.send({ csrfToken: req.csrfToken() });
+});
+
+authRouter.get('/user', auth, getCurrentUser)
+authRouter.patch('/me', limiter, auth, csrfProtection, updateCurrentUser)
+authRouter.get('/user/roles', auth, getCurrentUserRoles)
+authRouter.post('/login', limiter, csrfProtection, login)
+authRouter.get('/token', refreshAccessToken)
+authRouter.get('/logout', logout)
+authRouter.post('/register', limiter, csrfProtection, register)
+
+export default authRouter
