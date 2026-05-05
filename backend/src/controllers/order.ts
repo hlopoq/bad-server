@@ -13,6 +13,10 @@ export const getOrders = async (
     next: NextFunction
 ) => {
     try {
+        const userRoles: Role[] = res.locals.user?.roles || []
+        if (!userRoles.includes(Role.Admin)) {
+            return res.status(403).json({ message: 'Доступ запрещён' })
+        }
         const {
             page = 1,
             limit = 10,
@@ -25,7 +29,6 @@ export const getOrders = async (
             orderDateTo,
             search,
         } = req.query
-
         const filters: FilterQuery<Partial<IOrder>> = {}
 
         // Статус может быть только строкой, иначе ошибка
