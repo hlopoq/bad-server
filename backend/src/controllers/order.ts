@@ -1,10 +1,11 @@
 import { NextFunction, Request, Response } from 'express'
 import { FilterQuery, Error as MongooseError, Types } from 'mongoose'
+import sanitizeHtml from 'sanitize-html'
 import BadRequestError from '../errors/bad-request-error'
 import NotFoundError from '../errors/not-found-error'
 import Order, { IOrder } from '../models/order'
 import Product, { IProduct } from '../models/product'
-import User from '../models/user'
+import User, { IUser, Role } from '../models/user'
 
 export const getOrders = async (
     req: Request,
@@ -25,16 +26,12 @@ export const getOrders = async (
             search,
         } = req.query
 
-        // Нормализация лимита
-        const pageSize = Math.min(Number(limit), 10)
-        const currentPage = Number(page)
-
         const filters: FilterQuery<Partial<IOrder>> = {}
 
-        // Защита от NoSQL-инъекции: статус принимаем только как строку
+        // Статус может быть только строкой, иначе ошибка
         if (status) {
             if (typeof status === 'object') {
-                return next(new BadRequestError('Неверный формат статуса'))
+                throw new BadRequestError('Параметр status должен быть строкой')
             }
             filters.status = status as string
         }
@@ -42,15 +39,12 @@ export const getOrders = async (
         if (totalAmountFrom) {
             filters.totalAmount = { ...filters.totalAmount, $gte: Number(totalAmountFrom) }
         }
-
         if (totalAmountTo) {
             filters.totalAmount = { ...filters.totalAmount, $lte: Number(totalAmountTo) }
         }
-
         if (orderDateFrom) {
             filters.createdAt = { ...filters.createdAt, $gte: new Date(orderDateFrom as string) }
         }
-
         if (orderDateTo) {
             filters.createdAt = { ...filters.createdAt, $lte: new Date(orderDateTo as string) }
         }
@@ -78,9 +72,7 @@ export const getOrders = async (
         ]
 
         if (search) {
-            // Экранируем спецсимволы для защиты от ReDoS
-            const sanitized = (search as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-            const searchRegex = new RegExp(sanitized, 'i')
+            const searchRegex = new RegExp(search as string, 'i')
             const searchNumber = Number(search)
 
             const conditions: any[] = [{ 'products.title': searchRegex }]
@@ -89,6 +81,7 @@ export const getOrders = async (
             }
 
             aggregatePipeline.push({ $match: { $or: conditions } })
+            filters.$or = conditions
         }
 
         const sort: { [key: string]: any } = {}
@@ -96,9 +89,12 @@ export const getOrders = async (
             sort[sortField as string] = sortOrder === 'desc' ? -1 : 1
         }
 
+        // Ограничение количества записей на странице
+        const pageSize = Math.min(Number(limit), 10)
+
         aggregatePipeline.push(
             { $sort: sort },
-            { $skip: (currentPage - 1) * pageSize },
+            { $skip: (Number(page) - 1) * pageSize },
             { $limit: pageSize },
             {
                 $group: {
@@ -122,7 +118,7 @@ export const getOrders = async (
             pagination: {
                 totalOrders,
                 totalPages,
-                currentPage,
+                currentPage: Number(page),
                 pageSize,
             },
         })
@@ -141,12 +137,7 @@ export const getOrdersCurrentUser = async (
         const { search, page = 1, limit = 5 } = req.query
 
         const pageSize = Math.min(Number(limit), 10)
-        const currentPage = Number(page)
-
-        const options = {
-            skip: (currentPage - 1) * pageSize,
-            limit: pageSize,
-        }
+        const skip = (Number(page) - 1) * pageSize
 
         const user = await User.findById(userId)
             .populate({
@@ -156,14 +147,12 @@ export const getOrdersCurrentUser = async (
                     { path: 'customer' },
                 ],
             })
-            .orFail(() => new NotFoundError('Пользователь не найден'))
+            .orFail(() => new NotFoundError('Пользователь по заданному id отсутствует в базе'))
 
         let orders = user.orders as unknown as IOrder[]
 
         if (search) {
-            // Экранирование спецсимволов
-            const sanitized = (search as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-            const searchRegex = new RegExp(sanitized, 'i')
+            const searchRegex = new RegExp(search as string, 'i')
             const searchNumber = Number(search)
             const products = await Product.find({ title: searchRegex })
             const productIds = products.map((product) => product._id)
@@ -181,14 +170,14 @@ export const getOrdersCurrentUser = async (
         const totalOrders = orders.length
         const totalPages = Math.ceil(totalOrders / pageSize)
 
-        orders = orders.slice(options.skip, options.skip + options.limit)
+        orders = orders.slice(skip, skip + pageSize)
 
         return res.send({
             orders,
             pagination: {
                 totalOrders,
                 totalPages,
-                currentPage,
+                currentPage: Number(page),
                 pageSize,
             },
         })
@@ -203,9 +192,7 @@ export const getOrderByNumber = async (
     next: NextFunction
 ) => {
     try {
-        const order = await Order.findOne({
-            orderNumber: req.params.orderNumber,
-        })
+        const order = await Order.findOne({ orderNumber: req.params.orderNumber })
             .populate(['customer', 'products'])
             .orFail(() => new NotFoundError('Заказ по заданному id отсутствует в базе'))
         return res.status(200).json(order)
@@ -224,9 +211,7 @@ export const getOrderCurrentUserByNumber = async (
 ) => {
     const userId = res.locals.user._id
     try {
-        const order = await Order.findOne({
-            orderNumber: req.params.orderNumber,
-        })
+        const order = await Order.findOne({ orderNumber: req.params.orderNumber })
             .populate(['customer', 'products'])
             .orFail(() => new NotFoundError('Заказ по заданному id отсутствует в базе'))
         if (!order.customer._id.equals(userId)) {
@@ -235,7 +220,7 @@ export const getOrderCurrentUserByNumber = async (
         return res.status(200).json(order)
     } catch (error) {
         if (error instanceof MongooseError.CastError) {
-            return next(new BadRequestError('Невалидный ID'))
+            return next(new BadRequestError('Передан не валидный ID заказа'))
         }
         return next(error)
     }
@@ -252,9 +237,6 @@ export const createOrder = async (
         const userId = res.locals.user._id
         const { address, payment, phone, total, email, items, comment } = req.body
 
-        // Санитизация комментария – убираем все HTML-теги
-        const safeComment = comment ? String(comment).replace(/<\/?[^>]+(>|$)/g, '') : ''
-
         items.forEach((id: Types.ObjectId) => {
             const product = products.find((p) => p._id.equals(id))
             if (!product) throw new BadRequestError(`Товар с id ${id} не найден`)
@@ -265,13 +247,16 @@ export const createOrder = async (
         const totalBasket = basket.reduce((a, c) => a + c.price, 0)
         if (totalBasket !== total) return next(new BadRequestError('Неверная сумма заказа'))
 
+        // Очищаем комментарий от любых HTML-тегов
+        const cleanComment = sanitizeHtml(comment, { allowedTags: [] })
+
         const newOrder = new Order({
             totalAmount: total,
             products: items,
             payment,
             phone,
             email,
-            comment: safeComment,
+            comment: cleanComment,
             customer: userId,
             deliveryAddress: address,
         })
