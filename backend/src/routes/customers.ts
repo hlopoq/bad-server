@@ -7,11 +7,15 @@ import {
 } from '../controllers/customers'
 import auth from '../middlewares/auth'
 
-const customerRouter = Router()
+const customersRouter = Router()
 
-customerRouter.get('/', auth, getCustomers)
-customerRouter.get('/:id', auth, getCustomerById)
-customerRouter.patch('/:id', auth, updateCustomer)
-customerRouter.delete('/:id', auth, deleteCustomer)
+// Получить список всех клиентов
+customersRouter.get('/', auth, getCustomers)
+// Получить клиента по ID
+customersRouter.get('/:id', auth, getCustomerById)
+// Обновить данные клиента
+customersRouter.patch('/:id', auth, updateCustomer)
+// Удалить клиента
+customersRouter.delete('/:id', auth, deleteCustomer)
 
-export default customerRouter
+export default customersRouter
